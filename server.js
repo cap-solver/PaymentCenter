@@ -100,20 +100,26 @@ app.post('/api/activate', async (req, res) => {
     const phone1 = keyData.Phone1 || "";
     const updates = {};
 
+    // دالة مساعدة لتحويل الوقت إلى نص مقروء
+    const toReadableDate = (timestamp) => {
+      // يمكنك تعديل المنطقة الزمنية "ar-EG" حسب ما تفضله
+      return new Date(timestamp).toLocaleString("en-GB", { timeZone: "Asia/Amman" });
+    };
+
     // ==========================================
     // 1. أول تفعيل على الإطلاق للجهاز الأول
     // ==========================================
     if (phone1 === "" || phone1 === "null") {
       updates.Phone1 = deviceId;
-      updates.activatedAt = currentTime; // حفظ تاريخ التفعيل لأول مرة
+      updates.activatedAt = currentTime; 
+      updates.activatedDateReadable = toReadableDate(currentTime); // صيغة مقروءة لتاريخ التفعيل
       
-      // إذا كان هناك مدة أيام محددة، نحسب موعد الانتهاء من الآن
       if (keyData.durationDays) {
         expireAt = currentTime + (keyData.durationDays * 24 * 60 * 60 * 1000);
         updates.expireAt = expireAt;
+        updates.expireDateReadable = toReadableDate(expireAt); // صيغة مقروءة لتاريخ الانتهاء
       }
       
-      // تحديث قاعدة البيانات
       await keyRef.update(updates);
       return res.json({ success: true, expireAt: expireAt });
     }
@@ -121,14 +127,14 @@ app.post('/api/activate', async (req, res) => {
     // ==========================================
     // 2. تحديثات ديناميكية لتقليل/زيادة الأيام
     // ==========================================
-    // إذا كنت قد سجلت تاريخ تفعيل ومدة أيام، نعيد حساب تاريخ الانتهاء دائماً لكي يطبق أي تعديل تقوم به من لوحة التحكم
     if (keyData.activatedAt && keyData.durationDays) {
       const calculatedExpireAt = keyData.activatedAt + (keyData.durationDays * 24 * 60 * 60 * 1000);
       
-      // إذا قمت بتعديل الأيام يدوياً في Firebase، نقوم بتحديث expireAt في القاعدة تلقائياً
       if (calculatedExpireAt !== keyData.expireAt) {
         expireAt = calculatedExpireAt;
-        await keyRef.update({ expireAt: expireAt });
+        updates.expireAt = expireAt;
+        updates.expireDateReadable = toReadableDate(expireAt); // تحديث الصيغة المقروءة أيضاً
+        await keyRef.update(updates);
       }
     }
 
@@ -143,7 +149,7 @@ app.post('/api/activate', async (req, res) => {
     // 4. التحقق من تطابق الأجهزة والتسجيل
     // ==========================================
     if (phone1 === deviceId || (keyData.Phone2 && keyData.Phone2 === deviceId)) {
-      return res.json({ success: true, expireAt: expireAt }); // الجهاز مسجل وصالح
+      return res.json({ success: true, expireAt: expireAt }); 
     }
 
     if (keyData.hasOwnProperty('Phone2')) {
