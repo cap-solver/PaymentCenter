@@ -95,51 +95,67 @@ app.post('/api/activate', async (req, res) => {
       return res.status(403).json({ success: false, error: "هذا المفتاح غير مفعل (موقوف)" });
     }
 
-    // التحقق من صلاحية المفتاح إذا كان قد تم بدء استخدامه مسبقاً وانتهى وقته
     const currentTime = Date.now();
-    if (keyData.expireAt && currentTime > keyData.expireAt) {
-      return res.status(403).json({ success: false, error: "لقد انتهت صلاحية هذا المفتاح" });
-    }
-
-    const phone1 = keyData.Phone1 || "";
     let expireAt = keyData.expireAt || 0;
+    const phone1 = keyData.Phone1 || "";
     const updates = {};
 
-    // 1. أول تفعيل على الإطلاق (يتم بدء العد التنازلي الآن)
+    // ==========================================
+    // 1. أول تفعيل على الإطلاق للجهاز الأول
+    // ==========================================
     if (phone1 === "" || phone1 === "null") {
       updates.Phone1 = deviceId;
+      updates.activatedAt = currentTime; // حفظ تاريخ التفعيل لأول مرة
       
-      // إذا كان المفتاح يحتوي على حقل مدة الأيام، نبدأ العد من اللحظة الحالية
-      if (keyData.durationDays && !keyData.expireAt) {
+      // إذا كان هناك مدة أيام محددة، نحسب موعد الانتهاء من الآن
+      if (keyData.durationDays) {
         expireAt = currentTime + (keyData.durationDays * 24 * 60 * 60 * 1000);
         updates.expireAt = expireAt;
       }
       
-      // تحديث قاعدة البيانات بالجهاز الأول + تاريخ الانتهاء الجديد
+      // تحديث قاعدة البيانات
       await keyRef.update(updates);
       return res.json({ success: true, expireAt: expireAt });
     }
 
-    // 2. إذا لم يكن التفعيل الأول، نتحقق مما إذا كان الجهاز الحالي مسجلاً بالفعل
-    if (phone1 === deviceId || (keyData.Phone2 && keyData.Phone2 === deviceId)) {
-      return res.json({ success: true, expireAt: expireAt }); // الجهاز مسجل مسبقاً
+    // ==========================================
+    // 2. تحديثات ديناميكية لتقليل/زيادة الأيام
+    // ==========================================
+    // إذا كنت قد سجلت تاريخ تفعيل ومدة أيام، نعيد حساب تاريخ الانتهاء دائماً لكي يطبق أي تعديل تقوم به من لوحة التحكم
+    if (keyData.activatedAt && keyData.durationDays) {
+      const calculatedExpireAt = keyData.activatedAt + (keyData.durationDays * 24 * 60 * 60 * 1000);
+      
+      // إذا قمت بتعديل الأيام يدوياً في Firebase، نقوم بتحديث expireAt في القاعدة تلقائياً
+      if (calculatedExpireAt !== keyData.expireAt) {
+        expireAt = calculatedExpireAt;
+        await keyRef.update({ expireAt: expireAt });
+      }
     }
 
-    // 3. هنا (Phone1) ممتلئة بجهاز آخر. نتحقق: هل المفتاح مصمم لجهازين أم لجهاز واحد؟
+    // ==========================================
+    // 3. التحقق من انتهاء الصلاحية
+    // ==========================================
+    if (expireAt > 0 && currentTime > expireAt) {
+      return res.status(403).json({ success: false, error: "لقد انتهت صلاحية هذا المفتاح" });
+    }
+
+    // ==========================================
+    // 4. التحقق من تطابق الأجهزة والتسجيل
+    // ==========================================
+    if (phone1 === deviceId || (keyData.Phone2 && keyData.Phone2 === deviceId)) {
+      return res.json({ success: true, expireAt: expireAt }); // الجهاز مسجل وصالح
+    }
+
     if (keyData.hasOwnProperty('Phone2')) {
       const phone2 = keyData.Phone2 || "";
-      
       if (phone2 === "" || phone2 === "null") {
-        // الخانة الثانية فارغة، نقوم بتسجيل الجهاز الثاني فيها
         updates.Phone2 = deviceId;
         await keyRef.update(updates);
         return res.json({ success: true, expireAt: expireAt });
       } else {
-        // الخانتين ممتلئتين بأجهزة أخرى
         return res.status(403).json({ success: false, error: "لقد تم استخدام هذا المفتاح على جهازين بالفعل" });
       }
     } else {
-      // حقل Phone2 غير موجود نهائياً في هذا المفتاح
       return res.status(403).json({ success: false, error: "المفتاح مخصص لجهاز واحد فقط" });
     }
 
