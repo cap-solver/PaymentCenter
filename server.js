@@ -95,33 +95,51 @@ app.post('/api/activate', async (req, res) => {
       return res.status(403).json({ success: false, error: "هذا المفتاح غير مفعل (موقوف)" });
     }
 
+    // التحقق من صلاحية المفتاح إذا كان قد تم بدء استخدامه مسبقاً وانتهى وقته
+    const currentTime = Date.now();
+    if (keyData.expireAt && currentTime > keyData.expireAt) {
+      return res.status(403).json({ success: false, error: "لقد انتهت صلاحية هذا المفتاح" });
+    }
+
     const phone1 = keyData.Phone1 || "";
-    
-    // 1. التحقق مما إذا كان الجهاز الحالي مسجلاً بالفعل في إحدى الخانتين
-    if (phone1 === deviceId || (keyData.Phone2 && keyData.Phone2 === deviceId)) {
-      return res.json({ success: true }); // الجهاز مسجل مسبقاً
-    }
+    let expireAt = keyData.expireAt || 0;
+    const updates = {};
 
-    // 2. إذا كانت الخانة الأولى فارغة، نقوم بتسجيل الجهاز فيها
+    // 1. أول تفعيل على الإطلاق (يتم بدء العد التنازلي الآن)
     if (phone1 === "" || phone1 === "null") {
-      await keyRef.update({ Phone1: deviceId });
-      return res.json({ success: true });
+      updates.Phone1 = deviceId;
+      
+      // إذا كان المفتاح يحتوي على حقل مدة الأيام، نبدأ العد من اللحظة الحالية
+      if (keyData.durationDays && !keyData.expireAt) {
+        expireAt = currentTime + (keyData.durationDays * 24 * 60 * 60 * 1000);
+        updates.expireAt = expireAt;
+      }
+      
+      // تحديث قاعدة البيانات بالجهاز الأول + تاريخ الانتهاء الجديد
+      await keyRef.update(updates);
+      return res.json({ success: true, expireAt: expireAt });
     }
 
-    // 3. هنا (Phone1) ممتلئة بجهاز آخر. نتحقق الآن: هل المفتاح مصمم لجهازين أم لجهاز واحد؟
+    // 2. إذا لم يكن التفعيل الأول، نتحقق مما إذا كان الجهاز الحالي مسجلاً بالفعل
+    if (phone1 === deviceId || (keyData.Phone2 && keyData.Phone2 === deviceId)) {
+      return res.json({ success: true, expireAt: expireAt }); // الجهاز مسجل مسبقاً
+    }
+
+    // 3. هنا (Phone1) ممتلئة بجهاز آخر. نتحقق: هل المفتاح مصمم لجهازين أم لجهاز واحد؟
     if (keyData.hasOwnProperty('Phone2')) {
       const phone2 = keyData.Phone2 || "";
       
       if (phone2 === "" || phone2 === "null") {
-        // الخانة الثانية فارغة، نقوم بتسجيل الجهاز فيها
-        await keyRef.update({ Phone2: deviceId });
-        return res.json({ success: true });
+        // الخانة الثانية فارغة، نقوم بتسجيل الجهاز الثاني فيها
+        updates.Phone2 = deviceId;
+        await keyRef.update(updates);
+        return res.json({ success: true, expireAt: expireAt });
       } else {
         // الخانتين ممتلئتين بأجهزة أخرى
         return res.status(403).json({ success: false, error: "لقد تم استخدام هذا المفتاح على جهازين بالفعل" });
       }
     } else {
-      // حقل Phone2 غير موجود نهائياً في هذا المفتاح!
+      // حقل Phone2 غير موجود نهائياً في هذا المفتاح
       return res.status(403).json({ success: false, error: "المفتاح مخصص لجهاز واحد فقط" });
     }
 
