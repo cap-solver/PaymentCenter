@@ -95,53 +95,82 @@ app.post('/api/activate', async (req, res) => {
       return res.status(403).json({ success: false, error: "هذا المفتاح غير مفعل (موقوف)" });
     }
 
-    const currentTime = Date.now();
-    let expireAt = keyData.expireAt || 0;
+    const currentTimeMs = Date.now();
     const phone1 = keyData.Phone1 || "";
     const updates = {};
+    let expireMs = 0;
 
-    // دالة مساعدة لتحويل الوقت إلى نص مقروء
-    const toReadableDate = (timestamp) => {
-      // يمكنك تعديل المنطقة الزمنية "ar-EG" حسب ما تفضله
-      return new Date(timestamp).toLocaleString("en-GB", { timeZone: "Asia/Amman" });
+    // ==========================================
+    // دوال مساعدة لضبط الوقت على توقيت دمشق (UTC+3)
+    // التنسيق المعتمد: YYYY-MM-DD HH:mm:ss
+    // ==========================================
+    const toDamascusString = (ms) => {
+      const d = new Date(ms);
+      const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'Asia/Damascus', year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+      }).formatToParts(d);
+      const map = {};
+      parts.forEach(p => map[p.type] = p.value);
+      return `${map.year}-${map.month}-${map.day} ${map.hour}:${map.minute}:${map.second}`;
     };
+
+    const parseDamascusToMs = (str) => {
+      if (!str) return 0;
+      // إضافة +03:00 ليفهم السيرفر أن هذا النص مكتوب بتوقيت سوريا
+      const isoStr = str.trim().replace(' ', 'T') + '+03:00';
+      return Date.parse(isoStr);
+    };
+
 
     // ==========================================
     // 1. أول تفعيل على الإطلاق للجهاز الأول
     // ==========================================
     if (phone1 === "" || phone1 === "null") {
       updates.Phone1 = deviceId;
-      updates.activatedAt = currentTime; 
-      updates.activatedDateReadable = toReadableDate(currentTime); // صيغة مقروءة لتاريخ التفعيل
+      updates.activatedDateReadable = toDamascusString(currentTimeMs);
       
       if (keyData.durationDays) {
-        expireAt = currentTime + (keyData.durationDays * 24 * 60 * 60 * 1000);
-        updates.expireAt = expireAt;
-        updates.expireDateReadable = toReadableDate(expireAt); // صيغة مقروءة لتاريخ الانتهاء
+        expireMs = currentTimeMs + (keyData.durationDays * 24 * 60 * 60 * 1000);
+        updates.expireDateReadable = toDamascusString(expireMs);
       }
       
+      // تنظيف قاعدة البيانات من الحقول القديمة (إن وجدت)
+      updates.activatedAt = null; 
+      updates.expireAt = null;
+
       await keyRef.update(updates);
-      return res.json({ success: true, expireAt: expireAt });
+      return res.json({ success: true, expireAt: expireMs });
     }
 
     // ==========================================
-    // 2. تحديثات ديناميكية لتقليل/زيادة الأيام
+    // 2. حساب تاريخ الانتهاء بناءً على تاريخ التفعيل المقروء 
+    // (لكي يتطابق مع أي تعديل يدوي تقوم به)
     // ==========================================
-    if (keyData.activatedAt && keyData.durationDays) {
-      const calculatedExpireAt = keyData.activatedAt + (keyData.durationDays * 24 * 60 * 60 * 1000);
+    if (keyData.activatedDateReadable && keyData.durationDays) {
+      const activatedMs = parseDamascusToMs(keyData.activatedDateReadable);
       
-      if (calculatedExpireAt !== keyData.expireAt) {
-        expireAt = calculatedExpireAt;
-        updates.expireAt = expireAt;
-        updates.expireDateReadable = toReadableDate(expireAt); // تحديث الصيغة المقروءة أيضاً
-        await keyRef.update(updates);
+      if (!isNaN(activatedMs)) {
+        expireMs = activatedMs + (keyData.durationDays * 24 * 60 * 60 * 1000);
+        const expectedExpireStr = toDamascusString(expireMs);
+        
+        // إذا تغيرت الأيام أو تاريخ التفعيل يدوياً، نحدث تاريخ الانتهاء ليتطابق معه
+        if (keyData.expireDateReadable !== expectedExpireStr) {
+          updates.expireDateReadable = expectedExpireStr;
+          updates.activatedAt = null; // تأكيد التنظيف
+          updates.expireAt = null;    // تأكيد التنظيف
+          await keyRef.update(updates);
+        }
       }
+    } else if (keyData.expireDateReadable) {
+      // في حال لم يكن هناك أيام وكان هناك تاريخ انتهاء ثابت
+      expireMs = parseDamascusToMs(keyData.expireDateReadable);
     }
 
     // ==========================================
     // 3. التحقق من انتهاء الصلاحية
     // ==========================================
-    if (expireAt > 0 && currentTime > expireAt) {
+    if (expireMs > 0 && currentTimeMs > expireMs) {
       return res.status(403).json({ success: false, error: "لقد انتهت صلاحية هذا المفتاح" });
     }
 
@@ -149,7 +178,7 @@ app.post('/api/activate', async (req, res) => {
     // 4. التحقق من تطابق الأجهزة والتسجيل
     // ==========================================
     if (phone1 === deviceId || (keyData.Phone2 && keyData.Phone2 === deviceId)) {
-      return res.json({ success: true, expireAt: expireAt }); 
+      return res.json({ success: true, expireAt: expireMs }); 
     }
 
     if (keyData.hasOwnProperty('Phone2')) {
@@ -157,7 +186,7 @@ app.post('/api/activate', async (req, res) => {
       if (phone2 === "" || phone2 === "null") {
         updates.Phone2 = deviceId;
         await keyRef.update(updates);
-        return res.json({ success: true, expireAt: expireAt });
+        return res.json({ success: true, expireAt: expireMs });
       } else {
         return res.status(403).json({ success: false, error: "لقد تم استخدام هذا المفتاح على جهازين بالفعل" });
       }
