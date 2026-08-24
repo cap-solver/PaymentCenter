@@ -96,23 +96,34 @@ app.post('/api/activate', async (req, res) => {
     }
 
     const phone1 = keyData.Phone1 || "";
-    const phone2 = keyData.Phone2 || "";
-
-    if (phone1 === deviceId || phone2 === deviceId) {
+    
+    // 1. التحقق مما إذا كان الجهاز الحالي مسجلاً بالفعل في إحدى الخانتين
+    if (phone1 === deviceId || (keyData.Phone2 && keyData.Phone2 === deviceId)) {
       return res.json({ success: true }); // الجهاز مسجل مسبقاً
     }
 
+    // 2. إذا كانت الخانة الأولى فارغة، نقوم بتسجيل الجهاز فيها
     if (phone1 === "" || phone1 === "null") {
       await keyRef.update({ Phone1: deviceId });
       return res.json({ success: true });
     }
 
-    if (phone2 === "" || phone2 === "null") {
-      await keyRef.update({ Phone2: deviceId });
-      return res.json({ success: true });
+    // 3. هنا (Phone1) ممتلئة بجهاز آخر. نتحقق الآن: هل المفتاح مصمم لجهازين أم لجهاز واحد؟
+    if (keyData.hasOwnProperty('Phone2')) {
+      const phone2 = keyData.Phone2 || "";
+      
+      if (phone2 === "" || phone2 === "null") {
+        // الخانة الثانية فارغة، نقوم بتسجيل الجهاز فيها
+        await keyRef.update({ Phone2: deviceId });
+        return res.json({ success: true });
+      } else {
+        // الخانتين ممتلئتين بأجهزة أخرى
+        return res.status(403).json({ success: false, error: "لقد تم استخدام هذا المفتاح على جهازين بالفعل" });
+      }
+    } else {
+      // حقل Phone2 غير موجود نهائياً في هذا المفتاح!
+      return res.status(403).json({ success: false, error: "المفتاح مخصص لجهاز واحد فقط" });
     }
-
-    return res.status(403).json({ success: false, error: "لقد تم استخدام هذا المفتاح على جهازين بالفعل" });
 
   } catch (error) {
     console.error("Error activating key:", error);
