@@ -96,7 +96,8 @@ app.post('/api/activate', async (req, res) => {
     }
 
     const currentTimeMs = Date.now();
-    const phone1 = keyData.Phone1 || "";
+    const phone1Field = Object.keys(keyData).find(k => k.toLowerCase() === 'phone1') || 'Phone1';
+    const phone1 = keyData[phone1Field] || "";
     const updates = {};
     let expireMs = 0;
 
@@ -127,7 +128,7 @@ app.post('/api/activate', async (req, res) => {
     // 1. أول تفعيل على الإطلاق للجهاز الأول
     // ==========================================
     if (phone1 === "" || phone1 === "null") {
-      updates.Phone1 = deviceId;
+      updates[phone1Field] = deviceId;
       updates.activatedDateReadable = toDamascusString(currentTimeMs);
       
       if (keyData.durationDays) {
@@ -176,22 +177,47 @@ app.post('/api/activate', async (req, res) => {
 
     // ==========================================
     // 4. التحقق من تطابق الأجهزة والتسجيل
+    // (يدعم Phone1, Phone2, Phone3, ... بأي عدد + خيار unlimited اختياري)
     // ==========================================
-    if (phone1 === deviceId || (keyData.Phone2 && keyData.Phone2 === deviceId)) {
-      return res.json({ success: true, expireAt: expireMs }); 
+    if (keyData.unlimited === true) {
+      return res.json({ success: true, expireAt: expireMs });
     }
 
-    if (keyData.hasOwnProperty('Phone2')) {
-      const phone2 = keyData.Phone2 || "";
-      if (phone2 === "" || phone2 === "null") {
-        updates.Phone2 = deviceId;
+    const phoneFields = Object.keys(keyData)
+      .filter(k => /^phone(\d+)$/i.test(k))
+      .sort((a, b) => {
+        const numA = parseInt(a.match(/^phone(\d+)$/i)[1], 10);
+        const numB = parseInt(b.match(/^phone(\d+)$/i)[1], 10);
+        return numA - numB;
+      });
+
+    // إذا كان الجهاز مسجلاً مسبقاً في أي حقل من الحقول
+    for (const field of phoneFields) {
+      if (keyData[field] === deviceId) {
+        return res.json({ success: true, expireAt: expireMs });
+      }
+    }
+
+    // البحث عن أول حقل جهاز فارغ وتسجيل الجهاز فيه
+    for (const field of phoneFields) {
+      const val = keyData[field];
+      if (val === undefined || val === null || val === "" || val === "null") {
+        updates[field] = deviceId;
         await keyRef.update(updates);
         return res.json({ success: true, expireAt: expireMs });
-      } else {
-        return res.status(403).json({ success: false, error: "لقد تم استخدام هذا المفتاح على جهازين بالفعل" });
       }
-    } else {
+    }
+
+    // جميع حقول الأجهزة ممتلئة
+    if (phoneFields.length <= 1) {
       return res.status(403).json({ success: false, error: "المفتاح مخصص لجهاز واحد فقط" });
+    } else if (phoneFields.length === 2) {
+      return res.status(403).json({ success: false, error: "لقد تم استخدام هذا المفتاح على جهازين بالفعل" });
+    } else {
+      return res.status(403).json({
+        success: false,
+        error: `لقد تم استخدام هذا المفتاح على الحد الأقصى من الأجهزة (${phoneFields.length} أجهزة) بالفعل`
+      });
     }
 
   } catch (error) {
